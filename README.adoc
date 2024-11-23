@@ -82,7 +82,7 @@ Prerequisites: https://git-scm.com/downloads[git] with https://docs.github.com/e
 Clone the repo with submodules using the following command:
 
 ----
-git clone --recurse-submodules https://github.com/KhronosGroup/Vulkan-Samples.git
+git clone --recurse-submodules https://github.com/bolin12/Vulkan-Samples.git
 cd Vulkan-Samples
 ----
 
