@@ -1,5 +1,5 @@
-/* Copyright (c) 2019-2024, Sascha Willems
- * Copyright (c) 2024, Arm Limited and Contributors
+/* Copyright (c) 2019-2025, Sascha Willems
+ * Copyright (c) 2024-2025, Arm Limited and Contributors
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -90,6 +90,7 @@ void ApiVulkanSample::update(float delta_time)
 		view_changed();
 	}
 
+	assert(has_render_context());
 	render(delta_time);
 	camera.update(delta_time);
 	if (camera.moving())
@@ -449,6 +450,13 @@ VkPipelineShaderStageCreateInfo ApiVulkanSample::load_shader(const std::string &
 	{
 		shader_folder = "hlsl";
 		// HLSL shaders are offline compiled to SPIR-V, so source is SPV
+		src_language     = vkb::ShaderSourceLanguage::SPV;
+		shader_extension = ".spv";
+	}
+	else if (get_shading_language() == vkb::ShadingLanguage::SLANG)
+	{
+		shader_folder = "slang";
+		// slang shaders are offline compiled to SPIR-V, so source is SPV
 		src_language     = vkb::ShaderSourceLanguage::SPV;
 		shader_extension = ".spv";
 	}
@@ -1344,13 +1352,13 @@ void ApiVulkanSample::with_command_buffer(const std::function<void(VkCommandBuff
 	get_device().flush_command_buffer(command_buffer, queue, true, signalSemaphore);
 }
 
-void ApiVulkanSample::with_vkb_command_buffer(const std::function<void(vkb::CommandBuffer &command_buffer)> &f)
+void ApiVulkanSample::with_vkb_command_buffer(const std::function<void(vkb::core::CommandBufferC &command_buffer)> &f)
 {
-	auto &cmd = get_device().request_command_buffer();
-	cmd.begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, VK_NULL_HANDLE);
-	f(cmd);
-	cmd.end();
+	auto cmd = get_device().request_command_buffer();
+	cmd->begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, VK_NULL_HANDLE);
+	f(*cmd);
+	cmd->end();
 	auto &queue = get_device().get_queue_by_flags(VK_QUEUE_GRAPHICS_BIT, 0);
-	queue.submit(cmd, get_device().request_fence());
+	queue.submit(*cmd, get_device().request_fence());
 	get_device().get_fence_pool().wait();
 }

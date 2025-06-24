@@ -1,5 +1,5 @@
-/* Copyright (c) 2018-2024, Arm Limited and Contributors
- * Copyright (c) 2019-2024, Sascha Willems
+/* Copyright (c) 2018-2025, Arm Limited and Contributors
+ * Copyright (c) 2019-2025, Sascha Willems
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -176,12 +176,12 @@ Gui::Gui(VulkanSampleC &sample_, const Window &window, const Stats *stats, const
 	{
 		vkb::core::BufferC stage_buffer = vkb::core::BufferC::create_staging_buffer(device, upload_size, font_data);
 
-		auto &command_buffer = device.request_command_buffer();
+		auto command_buffer = device.request_command_buffer();
 
 		FencePool fence_pool{device};
 
 		// Begin recording
-		command_buffer.begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, 0);
+		command_buffer->begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, 0);
 
 		{
 			// Prepare for transfer
@@ -193,7 +193,7 @@ Gui::Gui(VulkanSampleC &sample_, const Window &window, const Stats *stats, const
 			memory_barrier.src_stage_mask  = VK_PIPELINE_STAGE_HOST_BIT;
 			memory_barrier.dst_stage_mask  = VK_PIPELINE_STAGE_TRANSFER_BIT;
 
-			command_buffer.image_memory_barrier(*font_image_view, memory_barrier);
+			command_buffer->image_memory_barrier(*font_image_view, memory_barrier);
 		}
 
 		// Copy
@@ -202,7 +202,7 @@ Gui::Gui(VulkanSampleC &sample_, const Window &window, const Stats *stats, const
 		buffer_copy_region.imageSubresource.aspectMask = font_image_view->get_subresource_range().aspectMask;
 		buffer_copy_region.imageExtent                 = font_image->get_extent();
 
-		command_buffer.copy_buffer_to_image(stage_buffer, *font_image, {buffer_copy_region});
+		command_buffer->copy_buffer_to_image(stage_buffer, *font_image, {buffer_copy_region});
 
 		{
 			// Prepare for fragmen shader
@@ -214,15 +214,15 @@ Gui::Gui(VulkanSampleC &sample_, const Window &window, const Stats *stats, const
 			memory_barrier.src_stage_mask  = VK_PIPELINE_STAGE_TRANSFER_BIT;
 			memory_barrier.dst_stage_mask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 
-			command_buffer.image_memory_barrier(*font_image_view, memory_barrier);
+			command_buffer->image_memory_barrier(*font_image_view, memory_barrier);
 		}
 
 		// End recording
-		command_buffer.end();
+		command_buffer->end();
 
 		auto &queue = device.get_queue_by_flags(VK_QUEUE_GRAPHICS_BIT, 0);
 
-		queue.submit(command_buffer, device.request_fence());
+		queue.submit(*command_buffer, device.request_fence());
 
 		// Wait for the command buffer to finish its work before destroying the staging buffer
 		device.get_fence_pool().wait();
@@ -440,13 +440,13 @@ bool Gui::update_buffers()
 	return updated;
 }
 
-void Gui::update_buffers(CommandBuffer &command_buffer, RenderFrame &render_frame)
+vkb::BufferAllocationC Gui::update_buffers(vkb::core::CommandBufferC &command_buffer)
 {
 	ImDrawData *draw_data = ImGui::GetDrawData();
 
 	if (!draw_data)
 	{
-		return;
+		return vkb::BufferAllocationC{};
 	}
 
 	size_t vertex_buffer_size = draw_data->TotalVtxCount * sizeof(ImDrawVert);
@@ -454,7 +454,7 @@ void Gui::update_buffers(CommandBuffer &command_buffer, RenderFrame &render_fram
 
 	if ((vertex_buffer_size == 0) || (index_buffer_size == 0))
 	{
-		return;
+		return vkb::BufferAllocationC{};
 	}
 
 	std::vector<uint8_t> vertex_data(vertex_buffer_size);
@@ -478,6 +478,8 @@ void Gui::update_buffers(CommandBuffer &command_buffer, RenderFrame &render_fram
 	index_allocation.update(index_data);
 
 	command_buffer.bind_index_buffer(index_allocation.get_buffer(), index_allocation.get_offset(), VK_INDEX_TYPE_UINT16);
+
+	return vertex_allocation;
 }
 
 void Gui::resize(const uint32_t width, const uint32_t height) const
@@ -487,7 +489,7 @@ void Gui::resize(const uint32_t width, const uint32_t height) const
 	io.DisplaySize.y = static_cast<float>(height);
 }
 
-void Gui::draw(CommandBuffer &command_buffer)
+void Gui::draw(vkb::core::CommandBufferC &command_buffer)
 {
 	if (!visible)
 	{
@@ -580,16 +582,25 @@ void Gui::draw(CommandBuffer &command_buffer)
 	// Push constants
 	command_buffer.push_constants(push_transform);
 
+	std::vector<std::reference_wrapper<const vkb::core::BufferC>> vertex_buffers;
+	std::vector<vk::DeviceSize>                                   vertex_offsets;
+
 	// If a render context is used, then use the frames buffer pools to allocate GUI vertex/index data from
 	if (!explicit_update)
 	{
-		update_buffers(command_buffer, sample.get_render_context().get_active_frame());
+		// Save vertex buffer allocation in case we need to rebind with vertex_offset, e.g. for iOS Simulator
+		auto vertex_allocation = update_buffers(command_buffer);
+		if (!vertex_allocation.empty())
+		{
+			vertex_buffers.push_back(vertex_allocation.get_buffer());
+			vertex_offsets.push_back(vertex_allocation.get_offset());
+		}
 	}
 	else
 	{
-		std::vector<std::reference_wrapper<const vkb::core::BufferC>> buffers;
-		buffers.push_back(*vertex_buffer);
-		command_buffer.bind_vertex_buffers(0, buffers, {0});
+		vertex_buffers.push_back(*vertex_buffer);
+		vertex_offsets.push_back(0);
+		command_buffer.bind_vertex_buffers(0, vertex_buffers, vertex_offsets);
 
 		command_buffer.bind_index_buffer(*index_buffer, 0, VK_INDEX_TYPE_UINT16);
 	}
@@ -647,11 +658,25 @@ void Gui::draw(CommandBuffer &command_buffer)
 			command_buffer.draw_indexed(cmd->ElemCount, 1, index_offset, vertex_offset, 0);
 			index_offset += cmd->ElemCount;
 		}
+#if defined(PLATFORM__MACOS) && TARGET_OS_IOS && TARGET_OS_SIMULATOR
+		// iOS Simulator does not support vkCmdDrawIndexed() with vertex_offset > 0, so rebind vertex buffer instead
+		if (!vertex_offsets.empty())
+		{
+			vertex_offsets.back() += cmd_list->VtxBuffer.Size * sizeof(ImDrawVert);
+			command_buffer.bind_vertex_buffers(0, vertex_buffers, vertex_offsets);
+		}
+#else
 		vertex_offset += cmd_list->VtxBuffer.Size;
+#endif
 	}
 }
 
 void Gui::draw(VkCommandBuffer command_buffer)
+{
+	draw(command_buffer, pipeline, pipeline_layout->get_handle(), descriptor_set);
+}
+
+void Gui::draw(VkCommandBuffer command_buffer, const VkPipeline pipeline, const VkPipelineLayout pipeline_layout, const VkDescriptorSet descriptor_set)
 {
 	if (!visible)
 	{
@@ -669,18 +694,17 @@ void Gui::draw(VkCommandBuffer command_buffer)
 	}
 
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-	vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout->get_handle(), 0, 1, &descriptor_set, 0, NULL);
+	vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 0, NULL);
 
 	// Push constants
 	auto push_transform = glm::mat4(1.0f);
 	push_transform      = glm::translate(push_transform, glm::vec3(-1.0f, -1.0f, 0.0f));
 	push_transform      = glm::scale(push_transform, glm::vec3(2.0f / io.DisplaySize.x, 2.0f / io.DisplaySize.y, 0.0f));
-	vkCmdPushConstants(command_buffer, pipeline_layout->get_handle(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &push_transform);
+	vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &push_transform);
 
-	VkDeviceSize offsets[1] = {0};
-
-	VkBuffer vertex_buffer_handle = vertex_buffer->get_handle();
-	vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer_handle, offsets);
+	VkDeviceSize vertex_offsets[1]    = {0};
+	VkBuffer     vertex_buffer_handle = vertex_buffer->get_handle();
+	vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer_handle, vertex_offsets);
 
 	VkBuffer index_buffer_handle = index_buffer->get_handle();
 	vkCmdBindIndexBuffer(command_buffer, index_buffer_handle, 0, VK_INDEX_TYPE_UINT16);
@@ -701,7 +725,13 @@ void Gui::draw(VkCommandBuffer command_buffer)
 			vkCmdDrawIndexed(command_buffer, cmd->ElemCount, 1, index_offset, vertex_offset, 0);
 			index_offset += cmd->ElemCount;
 		}
+#if defined(PLATFORM__MACOS) && TARGET_OS_IOS && TARGET_OS_SIMULATOR
+		// iOS Simulator does not support vkCmdDrawIndexed() with vertex_offset > 0, so rebind vertex buffer instead
+		vertex_offsets[0] += cmd_list->VtxBuffer.Size * sizeof(ImDrawVert);
+		vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer_handle, vertex_offsets);
+#else
 		vertex_offset += cmd_list->VtxBuffer.Size;
+#endif
 	}
 }
 
@@ -729,11 +759,21 @@ Drawer &Gui::get_drawer()
 	return drawer;
 }
 
+VkSampler Gui::get_sampler() const
+{
+	return sampler->get_handle();
+}
+
+VkImageView Gui::get_font_image_view() const
+{
+	return font_image_view->get_handle();
+}
+
 Font &Gui::get_font(const std::string &font_name)
 {
 	assert(!fonts.empty() && "No fonts exist");
 
-	auto it = std::find_if(fonts.begin(), fonts.end(), [&font_name](Font &font) { return font.name == font_name; });
+	auto it = std::ranges::find_if(fonts, [&font_name](Font &font) { return font.name == font_name; });
 
 	if (it != fonts.end())
 	{
@@ -922,7 +962,8 @@ void Gui::show_stats(const Stats &stats)
 		// Check if the stat is available in the current platform
 		if (stats.is_available(stat_index))
 		{
-			graph_label << fmt::format(graph_data.name + ": " + graph_data.format, avg * graph_data.scale_factor);
+			auto graph_value = avg * graph_data.scale_factor;
+			graph_label << fmt::vformat(graph_data.name + ": " + graph_data.format, fmt::make_format_args(graph_value));
 			ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
 			ImGui::PlotLines("", &graph_elements[0], static_cast<int>(graph_elements.size()), 0, graph_label.str().c_str(), graph_min, graph_max, graph_size);
 			ImGui::PopItemFlag();

@@ -1,5 +1,5 @@
-/* Copyright (c) 2023-2024, NVIDIA CORPORATION. All rights reserved.
- * Copyright (c) 2024, Arm Limited and Contributors
+/* Copyright (c) 2023-2025, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2024-2025, Arm Limited and Contributors
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -16,9 +16,12 @@
  * limitations under the License.
  */
 
-#include "hpp_render_context.h"
-
-#include <core/hpp_image.h>
+#include "rendering/hpp_render_context.h"
+#include "buffer_pool.h"
+#include "core/command_buffer.h"
+#include "core/hpp_physical_device.h"
+#include "core/hpp_queue.h"
+#include "platform/window.h"
 
 namespace vkb
 {
@@ -64,7 +67,7 @@ void HPPRenderContext::prepare(size_t thread_count, vkb::rendering::HPPRenderTar
 		{
 			auto swapchain_image = core::HPPImage{device, image_handle, extent, swapchain->get_format(), swapchain->get_usage()};
 			auto render_target   = create_render_target_func(std::move(swapchain_image));
-			frames.emplace_back(std::make_unique<vkb::rendering::HPPRenderFrame>(device, std::move(render_target), thread_count));
+			frames.emplace_back(std::make_unique<vkb::rendering::RenderFrameCpp>(device, std::move(render_target), thread_count));
 		}
 	}
 	else
@@ -79,7 +82,7 @@ void HPPRenderContext::prepare(size_t thread_count, vkb::rendering::HPPRenderTar
 		                                       VMA_MEMORY_USAGE_GPU_ONLY};
 
 		auto render_target = create_render_target_func(std::move(color_image));
-		frames.emplace_back(std::make_unique<vkb::rendering::HPPRenderFrame>(device, std::move(render_target), thread_count));
+		frames.emplace_back(std::make_unique<vkb::rendering::RenderFrameCpp>(device, std::move(render_target), thread_count));
 	}
 
 	this->create_render_target_func = create_render_target_func;
@@ -187,7 +190,7 @@ void HPPRenderContext::recreate()
 		else
 		{
 			// Create a new frame if the new swapchain has more images than current frames
-			frames.emplace_back(std::make_unique<vkb::rendering::HPPRenderFrame>(device, std::move(render_target), thread_count));
+			frames.emplace_back(std::make_unique<vkb::rendering::RenderFrameCpp>(device, std::move(render_target), thread_count));
 		}
 
 		++frame_it;
@@ -231,7 +234,7 @@ bool HPPRenderContext::handle_surface_changes(bool force_update)
 	return false;
 }
 
-vkb::core::HPPCommandBuffer &HPPRenderContext::begin(vkb::core::HPPCommandBuffer::ResetMode reset_mode)
+std::shared_ptr<vkb::core::CommandBufferCpp> HPPRenderContext::begin(vkb::CommandBufferResetMode reset_mode)
 {
 	assert(prepared && "HPPRenderContext not prepared for rendering, call prepare()");
 
@@ -246,15 +249,15 @@ vkb::core::HPPCommandBuffer &HPPRenderContext::begin(vkb::core::HPPCommandBuffer
 	}
 
 	const auto &queue = device.get_queue_by_flags(vk::QueueFlagBits::eGraphics, 0);
-	return get_active_frame().request_command_buffer(queue, reset_mode);
+	return get_active_frame().get_command_pool(queue, reset_mode).request_command_buffer();
 }
 
-void HPPRenderContext::submit(vkb::core::HPPCommandBuffer &command_buffer)
+void HPPRenderContext::submit(vkb::core::CommandBufferCpp &command_buffer)
 {
 	submit({&command_buffer});
 }
 
-void HPPRenderContext::submit(const std::vector<vkb::core::HPPCommandBuffer *> &command_buffers)
+void HPPRenderContext::submit(const std::vector<vkb::core::CommandBufferCpp *> &command_buffers)
 {
 	assert(frame_active && "HPPRenderContext is inactive, cannot submit command buffer. Please call begin()");
 
@@ -287,7 +290,7 @@ void HPPRenderContext::begin_frame()
 
 	// We will use the acquired semaphore in a different frame context,
 	// so we need to hold ownership.
-	acquired_semaphore = prev_frame.request_semaphore_with_ownership();
+	acquired_semaphore = prev_frame.get_semaphore_pool().request_semaphore_with_ownership();
 
 	if (swapchain)
 	{
@@ -315,7 +318,7 @@ void HPPRenderContext::begin_frame()
 			{
 				// Need to destroy and reallocate acquired_semaphore since it may have already been signaled
 				device.get_handle().destroySemaphore(acquired_semaphore);
-				acquired_semaphore                   = prev_frame.request_semaphore_with_ownership();
+				acquired_semaphore                   = prev_frame.get_semaphore_pool().request_semaphore_with_ownership();
 				std::tie(result, active_frame_index) = swapchain->acquire_next_image(acquired_semaphore);
 			}
 		}
@@ -335,41 +338,44 @@ void HPPRenderContext::begin_frame()
 }
 
 vk::Semaphore HPPRenderContext::submit(const vkb::core::HPPQueue                        &queue,
-                                       const std::vector<vkb::core::HPPCommandBuffer *> &command_buffers,
+                                       const std::vector<vkb::core::CommandBufferCpp *> &command_buffers,
                                        vk::Semaphore                                     wait_semaphore,
                                        vk::PipelineStageFlags                            wait_pipeline_stage)
 {
 	std::vector<vk::CommandBuffer> cmd_buf_handles(command_buffers.size(), nullptr);
-	std::transform(command_buffers.begin(), command_buffers.end(), cmd_buf_handles.begin(), [](const vkb::core::HPPCommandBuffer *cmd_buf) { return cmd_buf->get_handle(); });
+	std::ranges::transform(command_buffers, cmd_buf_handles.begin(), [](const vkb::core::CommandBufferCpp *cmd_buf) { return cmd_buf->get_handle(); });
 
-	vkb::rendering::HPPRenderFrame &frame = get_active_frame();
+	vkb::rendering::RenderFrameCpp &frame = get_active_frame();
 
-	vk::Semaphore signal_semaphore = frame.request_semaphore();
+	vk::Semaphore signal_semaphore = frame.get_semaphore_pool().request_semaphore();
 
-	vk::SubmitInfo submit_info(nullptr, nullptr, cmd_buf_handles, signal_semaphore);
+	vk::SubmitInfo submit_info{.commandBufferCount   = static_cast<uint32_t>(cmd_buf_handles.size()),
+	                           .pCommandBuffers      = cmd_buf_handles.data(),
+	                           .signalSemaphoreCount = 1,
+	                           .pSignalSemaphores    = &signal_semaphore};
 	if (wait_semaphore)
 	{
 		submit_info.setWaitSemaphores(wait_semaphore);
 		submit_info.pWaitDstStageMask = &wait_pipeline_stage;
 	}
 
-	vk::Fence fence = frame.request_fence();
+	vk::Fence fence = frame.get_fence_pool().request_fence();
 
 	queue.get_handle().submit(submit_info, fence);
 
 	return signal_semaphore;
 }
 
-void HPPRenderContext::submit(const vkb::core::HPPQueue &queue, const std::vector<vkb::core::HPPCommandBuffer *> &command_buffers)
+void HPPRenderContext::submit(const vkb::core::HPPQueue &queue, const std::vector<vkb::core::CommandBufferCpp *> &command_buffers)
 {
 	std::vector<vk::CommandBuffer> cmd_buf_handles(command_buffers.size(), nullptr);
-	std::transform(command_buffers.begin(), command_buffers.end(), cmd_buf_handles.begin(), [](const vkb::core::HPPCommandBuffer *cmd_buf) { return cmd_buf->get_handle(); });
+	std::ranges::transform(command_buffers, cmd_buf_handles.begin(), [](const vkb::core::CommandBufferCpp *cmd_buf) { return cmd_buf->get_handle(); });
 
-	vkb::rendering::HPPRenderFrame &frame = get_active_frame();
+	vkb::rendering::RenderFrameCpp &frame = get_active_frame();
 
-	vk::SubmitInfo submit_info(nullptr, nullptr, cmd_buf_handles);
+	vk::SubmitInfo submit_info{.commandBufferCount = static_cast<uint32_t>(cmd_buf_handles.size()), .pCommandBuffers = cmd_buf_handles.data()};
 
-	vk::Fence fence = frame.request_fence();
+	vk::Fence fence = frame.get_fence_pool().request_fence();
 
 	queue.get_handle().submit(submit_info, fence);
 }
@@ -386,7 +392,8 @@ void HPPRenderContext::end_frame(vk::Semaphore semaphore)
 	if (swapchain)
 	{
 		vk::SwapchainKHR   vk_swapchain = swapchain->get_handle();
-		vk::PresentInfoKHR present_info(semaphore, vk_swapchain, active_frame_index);
+		vk::PresentInfoKHR present_info{
+		    .waitSemaphoreCount = 1, .pWaitSemaphores = &semaphore, .swapchainCount = 1, .pSwapchains = &vk_swapchain, .pImageIndices = &active_frame_index};
 
 		vk::DisplayPresentInfoKHR disp_present_info;
 		if (device.is_extension_supported(VK_KHR_DISPLAY_SWAPCHAIN_EXTENSION_NAME) &&
@@ -427,7 +434,7 @@ vk::Semaphore HPPRenderContext::consume_acquired_semaphore()
 	return std::exchange(acquired_semaphore, nullptr);
 }
 
-vkb::rendering::HPPRenderFrame &HPPRenderContext::get_active_frame()
+vkb::rendering::RenderFrameCpp &HPPRenderContext::get_active_frame()
 {
 	assert(frame_active && "Frame is not active, please call begin_frame");
 	return *frames[active_frame_index];
@@ -439,7 +446,7 @@ uint32_t HPPRenderContext::get_active_frame_index()
 	return active_frame_index;
 }
 
-vkb::rendering::HPPRenderFrame &HPPRenderContext::get_last_rendered_frame()
+vkb::rendering::RenderFrameCpp &HPPRenderContext::get_last_rendered_frame()
 {
 	assert(!frame_active && "Frame is still active, please call end_frame");
 	return *frames[active_frame_index];
@@ -447,17 +454,17 @@ vkb::rendering::HPPRenderFrame &HPPRenderContext::get_last_rendered_frame()
 
 vk::Semaphore HPPRenderContext::request_semaphore()
 {
-	return get_active_frame().request_semaphore();
+	return get_active_frame().get_semaphore_pool().request_semaphore();
 }
 
 vk::Semaphore HPPRenderContext::request_semaphore_with_ownership()
 {
-	return get_active_frame().request_semaphore_with_ownership();
+	return get_active_frame().get_semaphore_pool().request_semaphore_with_ownership();
 }
 
 void HPPRenderContext::release_owned_semaphore(vk::Semaphore semaphore)
 {
-	get_active_frame().release_owned_semaphore(semaphore);
+	get_active_frame().get_semaphore_pool().release_owned_semaphore(semaphore);
 }
 
 vkb::core::HPPDevice &HPPRenderContext::get_device()
@@ -506,7 +513,7 @@ uint32_t HPPRenderContext::get_active_frame_index() const
 	return active_frame_index;
 }
 
-std::vector<std::unique_ptr<vkb::rendering::HPPRenderFrame>> &HPPRenderContext::get_render_frames()
+std::vector<std::unique_ptr<vkb::rendering::RenderFrameCpp>> &HPPRenderContext::get_render_frames()
 {
 	return frames;
 }

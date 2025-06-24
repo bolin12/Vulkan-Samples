@@ -1,4 +1,4 @@
-/* Copyright (c) 2022-2024, NVIDIA CORPORATION. All rights reserved.
+/* Copyright (c) 2022-2025, NVIDIA CORPORATION. All rights reserved.
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -15,10 +15,11 @@
  * limitations under the License.
  */
 
-#include <core/hpp_device.h>
-
-#include <common/hpp_error.h>
-#include <core/hpp_command_pool.h>
+#include "core/hpp_device.h"
+#include "core/buffer.h"
+#include "core/command_pool.h"
+#include "core/hpp_physical_device.h"
+#include "core/hpp_queue.h"
 
 namespace vkb
 {
@@ -148,7 +149,11 @@ HPPDevice::HPPDevice(vkb::core::HPPPhysicalDevice               &gpu,
 		}
 	}
 
-	vk::DeviceCreateInfo create_info({}, queue_create_infos, {}, enabled_extensions, &gpu.get_mutable_requested_features());
+	vk::DeviceCreateInfo create_info{.queueCreateInfoCount    = static_cast<uint32_t>(queue_create_infos.size()),
+	                                 .pQueueCreateInfos       = queue_create_infos.data(),
+	                                 .enabledExtensionCount   = static_cast<uint32_t>(enabled_extensions.size()),
+	                                 .ppEnabledExtensionNames = enabled_extensions.data(),
+	                                 .pEnabledFeatures        = &gpu.get_mutable_requested_features()};
 
 	// Latest requested feature will have the pNext's all set up for device creation.
 	create_info.pNext = gpu.get_extension_feature_chain();
@@ -171,7 +176,7 @@ HPPDevice::HPPDevice(vkb::core::HPPPhysicalDevice               &gpu,
 
 	vkb::allocated::init(*this);
 
-	command_pool = std::make_unique<vkb::core::HPPCommandPool>(
+	command_pool = std::make_unique<vkb::core::CommandPoolCpp>(
 	    *this, get_queue_by_flags(vk::QueueFlagBits::eGraphics | vk::QueueFlagBits::eCompute, 0).get_family_index());
 	fence_pool = std::make_unique<vkb::HPPFencePool>(*this);
 }
@@ -198,9 +203,8 @@ bool HPPDevice::is_extension_supported(std::string const &requested_extension) c
 
 bool HPPDevice::is_enabled(std::string const &extension) const
 {
-	return std::find_if(enabled_extensions.begin(),
-	                    enabled_extensions.end(),
-	                    [extension](const char *enabled_extension) { return extension == enabled_extension; }) != enabled_extensions.end();
+	return std::ranges::find_if(enabled_extensions,
+	                            [extension](const char *enabled_extension) { return extension == enabled_extension; }) != enabled_extensions.end();
 }
 
 vkb::core::HPPPhysicalDevice const &HPPDevice::get_gpu() const
@@ -321,12 +325,20 @@ std::pair<vk::Image, vk::DeviceMemory> HPPDevice::create_image(vk::Format format
 {
 	vk::Device device = get_handle();
 
-	vk::ImageCreateInfo image_create_info({}, vk::ImageType::e2D, format, vk::Extent3D(extent, 1), mip_levels, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, usage);
+	vk::ImageCreateInfo image_create_info{.imageType   = vk::ImageType::e2D,
+	                                      .format      = format,
+	                                      .extent      = {extent.width, extent.height, 1},
+	                                      .mipLevels   = mip_levels,
+	                                      .arrayLayers = 1,
+	                                      .samples     = vk::SampleCountFlagBits::e1,
+	                                      .tiling      = vk::ImageTiling::eOptimal,
+	                                      .usage       = usage};
 	vk::Image           image = device.createImage(image_create_info);
 
 	vk::MemoryRequirements memory_requirements = device.getImageMemoryRequirements(image);
 
-	vk::MemoryAllocateInfo memory_allocation(memory_requirements.size, get_gpu().get_memory_type(memory_requirements.memoryTypeBits, properties));
+	vk::MemoryAllocateInfo memory_allocation{.allocationSize  = memory_requirements.size,
+	                                         .memoryTypeIndex = get_gpu().get_memory_type(memory_requirements.memoryTypeBits, properties)};
 	vk::DeviceMemory       memory = device.allocateMemory(memory_allocation);
 	device.bindImageMemory(image, memory, 0);
 
@@ -335,12 +347,12 @@ std::pair<vk::Image, vk::DeviceMemory> HPPDevice::create_image(vk::Format format
 
 void HPPDevice::copy_buffer(vkb::core::BufferCpp &src, vkb::core::BufferCpp &dst, vk::Queue queue, vk::BufferCopy *copy_region) const
 {
-	assert(dst.get_size() <= src.get_size());
+	assert(dst.get_size() >= src.get_size());
 	assert(src.get_handle());
 
 	vk::CommandBuffer command_buffer = create_command_buffer(vk::CommandBufferLevel::ePrimary, true);
 
-	vk::BufferCopy buffer_copy{};
+	vk::BufferCopy buffer_copy;
 	if (copy_region)
 	{
 		buffer_copy = *copy_region;
@@ -359,7 +371,8 @@ vk::CommandBuffer HPPDevice::create_command_buffer(vk::CommandBufferLevel level,
 {
 	assert(command_pool && "No command pool exists in the device");
 
-	vk::CommandBuffer command_buffer = get_handle().allocateCommandBuffers({command_pool->get_handle(), level, 1}).front();
+	vk::CommandBuffer command_buffer =
+	    get_handle().allocateCommandBuffers({.commandPool = command_pool->get_handle(), .level = level, .commandBufferCount = 1}).front();
 
 	// If requested, also start recording for the new command buffer
 	if (begin)
@@ -379,7 +392,7 @@ void HPPDevice::flush_command_buffer(vk::CommandBuffer command_buffer, vk::Queue
 
 	command_buffer.end();
 
-	vk::SubmitInfo submit_info({}, {}, command_buffer);
+	vk::SubmitInfo submit_info{.commandBufferCount = 1, .pCommandBuffers = &command_buffer};
 	if (signalSemaphore)
 	{
 		submit_info.setSignalSemaphores(signalSemaphore);
@@ -407,7 +420,7 @@ void HPPDevice::flush_command_buffer(vk::CommandBuffer command_buffer, vk::Queue
 	}
 }
 
-vkb::core::HPPCommandPool &HPPDevice::get_command_pool()
+vkb::core::CommandPoolCpp &HPPDevice::get_command_pool()
 {
 	return *command_pool;
 }

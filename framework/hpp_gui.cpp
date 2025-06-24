@@ -1,4 +1,4 @@
-/* Copyright (c) 2023-2024, NVIDIA CORPORATION. All rights reserved.
+/* Copyright (c) 2023-2025, NVIDIA CORPORATION. All rights reserved.
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -16,11 +16,9 @@
  */
 
 #include "hpp_gui.h"
+#include "core/hpp_queue.h"
 #include "vulkan_sample.h"
-#include <common/hpp_utils.h>
-#include <core/hpp_command_pool.h>
 #include <imgui_internal.h>
-
 #include <numeric>
 
 namespace vkb
@@ -146,12 +144,12 @@ HPPGui::HPPGui(VulkanSampleCpp &sample_, const vkb::Window &window, const vkb::s
 	{
 		vkb::core::BufferCpp stage_buffer = vkb::core::BufferCpp::create_staging_buffer(device, upload_size, font_data);
 
-		auto &command_buffer = device.get_command_pool().request_command_buffer();
+		auto command_buffer = device.get_command_pool().request_command_buffer();
 
 		vkb::HPPFencePool fence_pool(device);
 
 		// Begin recording
-		command_buffer.begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+		command_buffer->begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
 
 		{
 			// Prepare for transfer
@@ -163,7 +161,7 @@ HPPGui::HPPGui(VulkanSampleCpp &sample_, const vkb::Window &window, const vkb::s
 			memory_barrier.src_stage_mask  = vk::PipelineStageFlagBits::eHost;
 			memory_barrier.dst_stage_mask  = vk::PipelineStageFlagBits::eTransfer;
 
-			command_buffer.image_memory_barrier(*font_image_view, memory_barrier);
+			command_buffer->image_memory_barrier(*font_image_view, memory_barrier);
 		}
 
 		// Copy
@@ -172,7 +170,7 @@ HPPGui::HPPGui(VulkanSampleCpp &sample_, const vkb::Window &window, const vkb::s
 		buffer_copy_region.imageSubresource.aspectMask = font_image_view->get_subresource_range().aspectMask;
 		buffer_copy_region.imageExtent                 = font_image->get_extent();
 
-		command_buffer.copy_buffer_to_image(stage_buffer, *font_image, {buffer_copy_region});
+		command_buffer->copy_buffer_to_image(stage_buffer, *font_image, {buffer_copy_region});
 
 		{
 			// Prepare for fragmen shader
@@ -184,15 +182,15 @@ HPPGui::HPPGui(VulkanSampleCpp &sample_, const vkb::Window &window, const vkb::s
 			memory_barrier.src_stage_mask  = vk::PipelineStageFlagBits::eTransfer;
 			memory_barrier.dst_stage_mask  = vk::PipelineStageFlagBits::eFragmentShader;
 
-			command_buffer.image_memory_barrier(*font_image_view, memory_barrier);
+			command_buffer->image_memory_barrier(*font_image_view, memory_barrier);
 		}
 
 		// End recording
-		command_buffer.end();
+		command_buffer->end();
 
 		auto &queue = device.get_queue_by_flags(vk::QueueFlagBits::eGraphics, 0);
 
-		queue.submit(command_buffer, device.get_fence_pool().request_fence());
+		queue.submit(*command_buffer, device.get_fence_pool().request_fence());
 
 		// Wait for the command buffer to finish its work before destroying the staging buffer
 		device.get_fence_pool().wait();
@@ -255,78 +253,85 @@ void HPPGui::prepare(vk::PipelineCache pipeline_cache, vk::RenderPass render_pas
 	vk::Device device = sample.get_render_context().get_device().get_handle();
 
 	// Descriptor pool
-	vk::DescriptorPoolSize       pool_size(vk::DescriptorType::eCombinedImageSampler, 1);
-	vk::DescriptorPoolCreateInfo descriptor_pool_create_info({}, 2, pool_size);
+	vk::DescriptorPoolSize       pool_size{.type = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = 1};
+	vk::DescriptorPoolCreateInfo descriptor_pool_create_info{.maxSets = 2, .poolSizeCount = 1, .pPoolSizes = &pool_size};
 	descriptor_pool = device.createDescriptorPool(descriptor_pool_create_info);
 
 	// Descriptor set layout
-	vk::DescriptorSetLayoutBinding    layout_binding(0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment);
-	vk::DescriptorSetLayoutCreateInfo descriptor_set_layout_create_info({}, layout_binding);
+	vk::DescriptorSetLayoutBinding layout_binding{
+	    .binding = 0, .descriptorType = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = 1, .stageFlags = vk::ShaderStageFlagBits::eFragment};
+	vk::DescriptorSetLayoutCreateInfo descriptor_set_layout_create_info{.bindingCount = 1, .pBindings = &layout_binding};
 	descriptor_set_layout = device.createDescriptorSetLayout(descriptor_set_layout_create_info);
 
 	// Descriptor set
-#if defined(ANDROID)
-	vk::DescriptorSetAllocateInfo descriptor_set_allocate_info(descriptor_pool, 1, &descriptor_set_layout);
-#else
-	vk::DescriptorSetAllocateInfo descriptor_set_allocate_info(descriptor_pool, descriptor_set_layout);
-#endif
+	vk::DescriptorSetAllocateInfo descriptor_set_allocate_info{.descriptorPool     = descriptor_pool,
+	                                                           .descriptorSetCount = 1,
+	                                                           .pSetLayouts        = &descriptor_set_layout};
 	descriptor_set = device.allocateDescriptorSets(descriptor_set_allocate_info).front();
 
-	vk::DescriptorImageInfo font_descriptor(sampler->get_handle(), font_image_view->get_handle(), vk::ImageLayout::eShaderReadOnlyOptimal);
-	vk::WriteDescriptorSet  write_descriptor_set(descriptor_set, 0, 0, vk::DescriptorType::eCombinedImageSampler, font_descriptor);
+	vk::DescriptorImageInfo font_descriptor{sampler->get_handle(), font_image_view->get_handle(), vk::ImageLayout::eShaderReadOnlyOptimal};
+	vk::WriteDescriptorSet  write_descriptor_set{.dstSet          = descriptor_set,
+	                                             .descriptorCount = 1,
+	                                             .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
+	                                             .pImageInfo      = &font_descriptor};
 	device.updateDescriptorSets(write_descriptor_set, {});
 
 	// Setup graphics pipeline for UI rendering
 
 	// Vertex bindings an attributes based on ImGui vertex definition
-	vk::VertexInputBindingDescription                  vertex_input_binding(0, sizeof(ImDrawVert), vk::VertexInputRate::eVertex);
-	std::array<vk::VertexInputAttributeDescription, 3> vertex_input_attributes = {{{0, 0, vk::Format::eR32G32Sfloat, offsetof(ImDrawVert, pos)},           // Location 0: Position
-	                                                                               {1, 0, vk::Format::eR32G32Sfloat, offsetof(ImDrawVert, uv)},            // Location 1 : UV
-	                                                                               {2, 0, vk::Format::eR8G8B8A8Unorm, offsetof(ImDrawVert, col)}}};        // Location 2: Color
-	vk::PipelineVertexInputStateCreateInfo             vertex_input_state({}, vertex_input_binding, vertex_input_attributes);
+	vk::VertexInputBindingDescription                  vertex_input_binding{.binding = 0, .stride = sizeof(ImDrawVert), .inputRate = vk::VertexInputRate::eVertex};
+	std::array<vk::VertexInputAttributeDescription, 3> vertex_input_attributes = {
+	    {{.location = 0, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(ImDrawVert, pos)},           // Location 0: Position
+	     {.location = 1, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(ImDrawVert, uv)},            // Location 1 : UV
+	     {.location = 2, .binding = 0, .format = vk::Format::eR8G8B8A8Unorm, .offset = offsetof(ImDrawVert, col)}}};        // Location 2: Color
+	vk::PipelineVertexInputStateCreateInfo vertex_input_state{.vertexBindingDescriptionCount   = 1,
+	                                                          .pVertexBindingDescriptions      = &vertex_input_binding,
+	                                                          .vertexAttributeDescriptionCount = static_cast<uint32_t>(vertex_input_attributes.size()),
+	                                                          .pVertexAttributeDescriptions    = vertex_input_attributes.data()};
 
-	vk::PipelineInputAssemblyStateCreateInfo input_assembly_state({}, vk::PrimitiveTopology::eTriangleList, false);
+	vk::PipelineInputAssemblyStateCreateInfo input_assembly_state{.topology = vk::PrimitiveTopology::eTriangleList};
 
-	vk::PipelineViewportStateCreateInfo viewport_state({}, 1, nullptr, 1, nullptr);
+	vk::PipelineViewportStateCreateInfo viewport_state{.viewportCount = 1, .scissorCount = 1};
 
-	vk::PipelineRasterizationStateCreateInfo rasterization_state(
-	    {}, false, {}, vk::PolygonMode::eFill, vk::CullModeFlagBits::eNone, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.0f);
+	vk::PipelineRasterizationStateCreateInfo rasterization_state{.polygonMode = vk::PolygonMode::eFill,
+	                                                             .cullMode    = vk::CullModeFlagBits::eNone,
+	                                                             .frontFace   = vk::FrontFace::eCounterClockwise,
+	                                                             .lineWidth   = 1.0f};
 
-	vk::PipelineMultisampleStateCreateInfo multisample_state({}, vk::SampleCountFlagBits::e1);
+	vk::PipelineMultisampleStateCreateInfo multisample_state{.rasterizationSamples = vk::SampleCountFlagBits::e1};
 
-	vk::PipelineDepthStencilStateCreateInfo depth_stencil_state({}, false, false, vk::CompareOp::eAlways, {}, {}, {}, {{}, {}, {}, vk::CompareOp::eAlways});
+	vk::PipelineDepthStencilStateCreateInfo depth_stencil_state{
+	    .depthTestEnable = false, .depthWriteEnable = false, .depthCompareOp = vk::CompareOp::eAlways, .back = {.compareOp = vk::CompareOp::eAlways}};
 
 	// Enable blending
-	vk::PipelineColorBlendAttachmentState blend_attachment_state(true,
-	                                                             vk::BlendFactor::eSrcAlpha,
-	                                                             vk::BlendFactor::eOneMinusSrcAlpha,
-	                                                             vk::BlendOp::eAdd,
-	                                                             vk::BlendFactor::eOneMinusSrcAlpha,
-	                                                             vk::BlendFactor::eZero,
-	                                                             vk::BlendOp::eAdd,
-	                                                             vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-	                                                                 vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
-	vk::PipelineColorBlendStateCreateInfo color_blend_state({}, {}, {}, blend_attachment_state);
+	vk::PipelineColorBlendAttachmentState blend_attachment_state{.blendEnable         = true,
+	                                                             .srcColorBlendFactor = vk::BlendFactor::eSrcAlpha,
+	                                                             .dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+	                                                             .colorBlendOp        = vk::BlendOp::eAdd,
+	                                                             .srcAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+	                                                             .dstAlphaBlendFactor = vk::BlendFactor::eZero,
+	                                                             .alphaBlendOp        = vk::BlendOp::eAdd,
+	                                                             .colorWriteMask      = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+	                                                                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
+	vk::PipelineColorBlendStateCreateInfo color_blend_state{.attachmentCount = 1, .pAttachments = &blend_attachment_state};
 
 	std::array<vk::DynamicState, 2>    dynamic_state_enables = {{vk::DynamicState::eViewport, vk::DynamicState::eScissor}};
-	vk::PipelineDynamicStateCreateInfo dynamic_state({}, dynamic_state_enables);
+	vk::PipelineDynamicStateCreateInfo dynamic_state{.dynamicStateCount = static_cast<uint32_t>(dynamic_state_enables.size()),
+	                                                 .pDynamicStates    = dynamic_state_enables.data()};
 
-	vk::GraphicsPipelineCreateInfo pipeline_create_info({},
-	                                                    shader_stages,
-	                                                    &vertex_input_state,
-	                                                    &input_assembly_state,
-	                                                    nullptr,
-	                                                    &viewport_state,
-	                                                    &rasterization_state,
-	                                                    &multisample_state,
-	                                                    &depth_stencil_state,
-	                                                    &color_blend_state,
-	                                                    &dynamic_state,
-	                                                    pipeline_layout->get_handle(),
-	                                                    render_pass,
-	                                                    0,
-	                                                    nullptr,
-	                                                    -1);
+	vk::GraphicsPipelineCreateInfo pipeline_create_info{.stageCount          = static_cast<uint32_t>(shader_stages.size()),
+	                                                    .pStages             = shader_stages.data(),
+	                                                    .pVertexInputState   = &vertex_input_state,
+	                                                    .pInputAssemblyState = &input_assembly_state,
+	                                                    .pViewportState      = &viewport_state,
+	                                                    .pRasterizationState = &rasterization_state,
+	                                                    .pMultisampleState   = &multisample_state,
+	                                                    .pDepthStencilState  = &depth_stencil_state,
+	                                                    .pColorBlendState    = &color_blend_state,
+	                                                    .pDynamicState       = &dynamic_state,
+	                                                    .layout              = pipeline_layout->get_handle(),
+	                                                    .renderPass          = render_pass,
+	                                                    .basePipelineIndex   = -1};
 
 	pipeline = device.createGraphicsPipeline(pipeline_cache, pipeline_create_info).value;
 }
@@ -407,14 +412,14 @@ bool HPPGui::update_buffers()
 	return updated;
 }
 
-void HPPGui::update_buffers(vkb::core::HPPCommandBuffer &command_buffer) const
+vkb::BufferAllocationCpp HPPGui::update_buffers(vkb::core::CommandBufferCpp &command_buffer) const
 {
 	ImDrawData                     *draw_data    = ImGui::GetDrawData();
-	vkb::rendering::HPPRenderFrame &render_frame = sample.get_render_context().get_active_frame();
+	vkb::rendering::RenderFrameCpp &render_frame = sample.get_render_context().get_active_frame();
 
 	if (!draw_data || (draw_data->TotalVtxCount == 0) || (draw_data->TotalIdxCount == 0))
 	{
-		return;
+		return vkb::BufferAllocationCpp{};
 	}
 
 	size_t vertex_buffer_size = draw_data->TotalVtxCount * sizeof(ImDrawVert);
@@ -439,6 +444,8 @@ void HPPGui::update_buffers(vkb::core::HPPCommandBuffer &command_buffer) const
 	index_allocation.update(index_data);
 
 	command_buffer.bind_index_buffer(index_allocation.get_buffer(), index_allocation.get_offset(), vk::IndexType::eUint16);
+
+	return vertex_allocation;
 }
 
 void HPPGui::resize(uint32_t width, uint32_t height) const
@@ -453,7 +460,7 @@ void HPPGui::new_frame() const
 	ImGui::NewFrame();
 }
 
-void HPPGui::draw(vkb::core::HPPCommandBuffer &command_buffer)
+void HPPGui::draw(vkb::core::CommandBufferCpp &command_buffer)
 {
 	if (!visible)
 	{
@@ -463,16 +470,16 @@ void HPPGui::draw(vkb::core::HPPCommandBuffer &command_buffer)
 	vkb::core::HPPScopedDebugLabel debug_label(command_buffer, "GUI");
 
 	// Vertex input state
-	vk::VertexInputBindingDescription vertex_input_binding({}, to_u32(sizeof(ImDrawVert)));
+	vk::VertexInputBindingDescription vertex_input_binding{{}, to_u32(sizeof(ImDrawVert))};
 
 	// Location 0: Position
-	vk::VertexInputAttributeDescription pos_attr(0, 0, vk::Format::eR32G32Sfloat, to_u32(offsetof(ImDrawVert, pos)));
+	vk::VertexInputAttributeDescription pos_attr{0, 0, vk::Format::eR32G32Sfloat, to_u32(offsetof(ImDrawVert, pos))};
 
 	// Location 1: UV
-	vk::VertexInputAttributeDescription uv_attr(1, 0, vk::Format::eR32G32Sfloat, to_u32(offsetof(ImDrawVert, uv)));
+	vk::VertexInputAttributeDescription uv_attr{1, 0, vk::Format::eR32G32Sfloat, to_u32(offsetof(ImDrawVert, uv))};
 
 	// Location 2: Color
-	vk::VertexInputAttributeDescription col_attr(2, 0, vk::Format::eR8G8B8A8Unorm, to_u32(offsetof(ImDrawVert, col)));
+	vk::VertexInputAttributeDescription col_attr{2, 0, vk::Format::eR8G8B8A8Unorm, to_u32(offsetof(ImDrawVert, col))};
 
 	vkb::rendering::HPPVertexInputState vertex_input_state;
 	vertex_input_state.bindings   = {vertex_input_binding};
@@ -537,16 +544,25 @@ void HPPGui::draw(vkb::core::HPPCommandBuffer &command_buffer)
 	// Push constants
 	command_buffer.push_constants(push_transform);
 
+	std::vector<std::reference_wrapper<const vkb::core::BufferCpp>> vertex_buffers;
+	std::vector<vk::DeviceSize>                                     vertex_offsets;
+
 	// If a render context is used, then use the frames buffer pools to allocate GUI vertex/index data from
 	if (!explicit_update)
 	{
-		update_buffers(command_buffer);
+		// Save vertex buffer allocation in case we need to rebind with vertex_offset, e.g. for iOS Simulator
+		auto vertex_allocation = update_buffers(command_buffer);
+		if (!vertex_allocation.empty())
+		{
+			vertex_buffers.push_back(vertex_allocation.get_buffer());
+			vertex_offsets.push_back(vertex_allocation.get_offset());
+		}
 	}
 	else
 	{
-		std::vector<std::reference_wrapper<const vkb::core::BufferCpp>> buffers;
-		buffers.push_back(*vertex_buffer);
-		command_buffer.bind_vertex_buffers(0, buffers, {0});
+		vertex_buffers.push_back(*vertex_buffer);
+		vertex_offsets.push_back(0);
+		command_buffer.bind_vertex_buffers(0, vertex_buffers, vertex_offsets);
 
 		command_buffer.bind_index_buffer(*index_buffer, 0, vk::IndexType::eUint16);
 	}
@@ -604,7 +620,16 @@ void HPPGui::draw(vkb::core::HPPCommandBuffer &command_buffer)
 			command_buffer.draw_indexed(cmd->ElemCount, 1, index_offset, vertex_offset, 0);
 			index_offset += cmd->ElemCount;
 		}
+#if defined(PLATFORM__MACOS) && TARGET_OS_IOS && TARGET_OS_SIMULATOR
+		// iOS Simulator does not support vkCmdDrawIndexed() with vertex_offset > 0, so rebind vertex buffer instead
+		if (!vertex_offsets.empty())
+		{
+			vertex_offsets.back() += cmd_list->VtxBuffer.Size * sizeof(ImDrawVert);
+			command_buffer.bind_vertex_buffers(0, vertex_buffers, vertex_offsets);
+		}
+#else
 		vertex_offset += cmd_list->VtxBuffer.Size;
+#endif
 	}
 }
 
@@ -630,8 +655,9 @@ void HPPGui::draw(vk::CommandBuffer command_buffer) const
 	glm::mat4 push_transform = glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(-1.0f, -1.0f, 0.0f)), glm::vec3(2.0f / io.DisplaySize.x, 2.0f / io.DisplaySize.y, 0.0f));
 	command_buffer.pushConstants<glm::mat4>(pipeline_layout->get_handle(), vk::ShaderStageFlagBits::eVertex, 0, push_transform);
 
-	vk::DeviceSize offset = 0;
-	command_buffer.bindVertexBuffers(0, vertex_buffer->get_handle(), offset);
+	vk::DeviceSize vertex_offsets[1]    = {0};
+	vk::Buffer     vertex_buffer_handle = vertex_buffer->get_handle();
+	command_buffer.bindVertexBuffers(0, vertex_buffer_handle, vertex_offsets);
 
 	command_buffer.bindIndexBuffer(index_buffer->get_handle(), 0, vk::IndexType::eUint16);
 
@@ -653,7 +679,13 @@ void HPPGui::draw(vk::CommandBuffer command_buffer) const
 			command_buffer.drawIndexed(cmd->ElemCount, 1, index_offset, vertex_offset, 0);
 			index_offset += cmd->ElemCount;
 		}
+#if defined(PLATFORM__MACOS) && TARGET_OS_IOS && TARGET_OS_SIMULATOR
+		// iOS Simulator does not support vkCmdDrawIndexed() with vertex_offset > 0, so rebind vertex buffer instead
+		vertex_offsets[0] += cmd_list->VtxBuffer.Size * sizeof(ImDrawVert);
+		command_buffer.bindVertexBuffers(0, vertex_buffer_handle, vertex_offsets);
+#else
 		vertex_offset += cmd_list->VtxBuffer.Size;
+#endif
 	}
 }
 
@@ -687,7 +719,7 @@ HPPFont const &HPPGui::get_font(const std::string &font_name) const
 {
 	assert(!fonts.empty() && "No fonts exist");
 
-	auto it = std::find_if(fonts.begin(), fonts.end(), [&font_name](HPPFont const &font) { return font.name == font_name; });
+	auto it = std::ranges::find_if(fonts, [&font_name](HPPFont const &font) { return font.name == font_name; });
 
 	if (it != fonts.end())
 	{
@@ -869,7 +901,8 @@ void HPPGui::show_stats(const vkb::stats::HPPStats &stats)
 		// Check if the stat is available in the current platform
 		if (stats.is_available(stat_index))
 		{
-			graph_label << fmt::format(graph_data.name + ": " + graph_data.format, avg * graph_data.scale_factor);
+			auto graph_value = avg * graph_data.scale_factor;
+			graph_label << fmt::vformat(graph_data.name + ": " + graph_data.format, fmt::make_format_args(graph_value));
 			ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
 			ImGui::PlotLines("", &graph_elements[0], static_cast<int>(graph_elements.size()), 0, graph_label.str().c_str(), graph_min, graph_max, graph_size);
 			ImGui::PopItemFlag();

@@ -1,5 +1,5 @@
 ////
-- Copyright (c) 2019-2024, Arm Limited and Contributors
+- Copyright (c) 2019-2025, Arm Limited and Contributors
 -
 - SPDX-License-Identifier: Apache-2.0
 -
@@ -221,12 +221,12 @@ build\windows\app\bin\Release\AMD64\vulkan_samples.exe
 === Dependencies
 
 * CMake v3.12+
-* C{pp}17 Compiler
+* C{pp}20 Compiler
 * <<cmake-options,CMake Options>>
 * <<3d-models,3D models>>
 
 ----
-sudo apt-get install cmake g++ xorg-dev libglu1-mesa-dev
+sudo apt-get install cmake g++ xorg-dev libglu1-mesa-dev libwayland-dev libxkbcommon-dev
 ----
 
 === Build with CMake
@@ -363,9 +363,12 @@ ____
 We use this environment in the CI https://github.com/KhronosGroupActions/android-ndk-build[Android NDK Repository]
 ____
 
-It is highly recommended to install https://d.android.com/studio[Android Studio] to build, run and trace the sample project.
-Android Studio uses the following plugins/tools to build samples:
+=== Android Studio (Recommended)
 
+It is highly recommended to install https://d.android.com/studio[Android Studio] to build, run and trace the sample project. Building via Android Studio requires at least Ladybug 2024.2.1.
+
+Android Studio uses the following plugins/tools to build samples:
+ 
 * Android Gradle Plugin
 * CMake Plugin, which installs and uses Ninja
 * NDK

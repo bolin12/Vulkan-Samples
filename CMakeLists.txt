@@ -1,5 +1,5 @@
-# Copyright (c) 2020-2024, Arm Limited and Contributors
-# Copyright (c) 2024, Mobica Limited
+# Copyright (c) 2020-2025, Arm Limited and Contributors
+# Copyright (c) 2024-2025, Mobica Limited
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -36,6 +36,9 @@ cmake_minimum_required(VERSION 3.16)
 
 project(vulkan_samples)
 
+if(VKB_GENERATE_ANTORA_SITE)
+    add_subdirectory(antora)
+else ()
 # search for Vulkan SDK
 find_package(Vulkan)
 
@@ -53,10 +56,27 @@ if(Vulkan_FOUND)
     else()
         message(STATUS "Couldn't find DirectX Shader Compiler executable, make sure it is present in Vulkan SDK or add it manually via Vulkan_dxc_EXECUTABLE cmake variable. HLSL shaders won't be compiled.")
     endif()
+    # slang compiler
+    if(NOT Vulkan_slang_exe_FOUND)
+        find_program(Vulkan_slang_EXECUTABLE
+                    NAMES slangc
+                    HINTS
+                    "$ENV{VULKAN_SDK}/Bin"
+                    "$ENV{VULKAN_SDK}/bin"
+                    )
+    endif()
+    if(Vulkan_slang_EXECUTABLE)
+        message(STATUS "Found slang Shader Compiler under ${Vulkan_slang_EXECUTABLE}")
+    else()
+        message(STATUS "Couldn't find slang Shader Compiler executable, make sure it is present in Vulkan SDK or add it manually via Vulkan_slang_EXECUTABLE cmake variable. Slang shaders won't be compiled.")
+    endif()
 endif()
 
 # globally add VKB_DEBUG for the debug build
 add_compile_definitions($<$<CONFIG:DEBUG>:VKB_DEBUG>)
+
+#globally define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS to have designated initializers for the vk-structs
+add_compile_definitions(VULKAN_HPP_NO_STRUCT_CONSTRUCTORS)
 
 # globally set -fno-strict-aliasing, needed due to using reinterpret_cast
 if (NOT MSVC)
@@ -89,8 +109,6 @@ include(component_helper)
 # Add third party libraries
 add_subdirectory(third_party)
 
-vkb__enable_testing()
-
 # Framework v2.0 components directory
 add_subdirectory(components)
 
@@ -104,5 +122,4 @@ endif()
 
 # Add vulkan app (runs all samples)
 add_subdirectory(app)
-
-add_subdirectory(antora)
+endif ()

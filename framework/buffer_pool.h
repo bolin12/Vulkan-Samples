@@ -1,5 +1,5 @@
-/* Copyright (c) 2019-2024, Arm Limited and Contributors
- * Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+/* Copyright (c) 2019-2025, Arm Limited and Contributors
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION. All rights reserved.
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -18,9 +18,9 @@
 
 #pragma once
 
+#include "common/helpers.h"
 #include "core/buffer.h"
-#include "core/device.h"
-#include "core/hpp_device.h"
+#include "core/hpp_physical_device.h"
 
 namespace vkb
 {
@@ -36,9 +36,9 @@ class BufferAllocation
 
   public:
 	BufferAllocation()                                    = default;
-	BufferAllocation(const BufferAllocation &)            = delete;
+	BufferAllocation(const BufferAllocation &)            = default;
 	BufferAllocation(BufferAllocation &&)                 = default;
-	BufferAllocation &operator=(const BufferAllocation &) = delete;
+	BufferAllocation &operator=(const BufferAllocation &) = default;
 	BufferAllocation &operator=(BufferAllocation &&)      = default;
 
 	BufferAllocation(vkb::core::Buffer<bindingType> &buffer, DeviceSizeType size, DeviceSizeType offset);
@@ -337,12 +337,10 @@ template <vkb::BindingType bindingType>
 BufferBlock<bindingType> &BufferPool<bindingType>::request_buffer_block(DeviceSizeType minimum_size, bool minimal)
 {
 	// Find a block in the range of the blocks which can fit the minimum size
-	auto it = minimal ? std::find_if(buffer_blocks.begin(),
-	                                 buffer_blocks.end(),
-	                                 [&minimum_size](auto const &buffer_block) { return (buffer_block->get_size() == minimum_size) && buffer_block->can_allocate(minimum_size); }) :
-	                    std::find_if(buffer_blocks.begin(),
-	                                 buffer_blocks.end(),
-	                                 [&minimum_size](auto const &buffer_block) { return buffer_block->can_allocate(minimum_size); });
+	auto it = minimal ? std::ranges::find_if(buffer_blocks,
+	                                         [&minimum_size](auto const &buffer_block) { return (buffer_block->get_size() == minimum_size) && buffer_block->can_allocate(minimum_size); }) :
+	                    std::ranges::find_if(buffer_blocks,
+	                                         [&minimum_size](auto const &buffer_block) { return buffer_block->can_allocate(minimum_size); });
 
 	if (it == buffer_blocks.end())
 	{

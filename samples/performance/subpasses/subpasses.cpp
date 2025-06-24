@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2024, Arm Limited and Contributors
+/* Copyright (c) 2019-2025, Arm Limited and Contributors
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -358,7 +358,10 @@ std::unique_ptr<vkb::RenderPipeline> Subpasses::create_lighting_renderpass()
 	return lighting_render_pipeline;
 }
 
-void draw_pipeline(vkb::CommandBuffer &command_buffer, vkb::RenderTarget &render_target, vkb::RenderPipeline &render_pipeline, vkb::Gui *gui = nullptr)
+void draw_pipeline(vkb::core::CommandBufferC &command_buffer,
+                   vkb::RenderTarget         &render_target,
+                   vkb::RenderPipeline       &render_pipeline,
+                   vkb::Gui                  *gui = nullptr)
 {
 	auto &extent = render_target.get_extent();
 
@@ -383,12 +386,12 @@ void draw_pipeline(vkb::CommandBuffer &command_buffer, vkb::RenderTarget &render
 	command_buffer.end_render_pass();
 }
 
-void Subpasses::draw_subpasses(vkb::CommandBuffer &command_buffer, vkb::RenderTarget &render_target)
+void Subpasses::draw_subpasses(vkb::core::CommandBufferC &command_buffer, vkb::RenderTarget &render_target)
 {
 	draw_pipeline(command_buffer, render_target, *render_pipeline, &get_gui());
 }
 
-void Subpasses::draw_renderpasses(vkb::CommandBuffer &command_buffer, vkb::RenderTarget &render_target)
+void Subpasses::draw_renderpasses(vkb::core::CommandBufferC &command_buffer, vkb::RenderTarget &render_target)
 {
 	// First render pass (no gui)
 	draw_pipeline(command_buffer, render_target, *geometry_render_pipeline);
@@ -400,13 +403,15 @@ void Subpasses::draw_renderpasses(vkb::CommandBuffer &command_buffer, vkb::Rende
 
 		vkb::ImageMemoryBarrier barrier;
 
-		if (i == 1)
+		if (vkb::is_depth_format(view.get_format()))
 		{
 			barrier.old_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 			barrier.new_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
 			barrier.src_stage_mask  = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+			barrier.dst_stage_mask  = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 			barrier.src_access_mask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			barrier.dst_access_mask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
 		}
 		else
 		{
@@ -414,20 +419,19 @@ void Subpasses::draw_renderpasses(vkb::CommandBuffer &command_buffer, vkb::Rende
 			barrier.new_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 			barrier.src_stage_mask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			barrier.dst_stage_mask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 			barrier.src_access_mask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			barrier.dst_access_mask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
 		}
 
-		barrier.dst_stage_mask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-		barrier.dst_access_mask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
-
-		command_buffer.image_memory_barrier(view, barrier);
+		command_buffer.image_memory_barrier(render_target, i, barrier);
 	}
 
 	// Second render pass
 	draw_pipeline(command_buffer, render_target, *lighting_render_pipeline, &get_gui());
 }
 
-void Subpasses::draw_renderpass(vkb::CommandBuffer &command_buffer, vkb::RenderTarget &render_target)
+void Subpasses::draw_renderpass(vkb::core::CommandBufferC &command_buffer, vkb::RenderTarget &render_target)
 {
 	if (configs[Config::RenderTechnique].value == 0)
 	{

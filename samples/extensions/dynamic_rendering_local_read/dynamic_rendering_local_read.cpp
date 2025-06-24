@@ -1,4 +1,4 @@
-/* Copyright (c) 2024, Sascha Willems
+/* Copyright (c) 2024-2025, Sascha Willems
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -678,6 +678,16 @@ void DynamicRenderingLocalRead::prepare_pipelines()
 	{
 		pipeline_rendering_create_info.stencilAttachmentFormat = depth_format;
 	}
+
+	VkRenderingInputAttachmentIndexInfo rendering_attachment_index_info{VK_STRUCTURE_TYPE_RENDERING_INPUT_ATTACHMENT_INDEX_INFO};
+	pipeline_rendering_create_info.pNext = &rendering_attachment_index_info;
+
+	std::array<uint32_t, 4> colorAttachments                     = {VK_ATTACHMENT_UNUSED, 0, 1, 2};
+	rendering_attachment_index_info.pNext                        = nullptr;
+	rendering_attachment_index_info.colorAttachmentCount         = colorAttachments.size();
+	rendering_attachment_index_info.pColorAttachmentInputIndices = colorAttachments.data();
+	rendering_attachment_index_info.pDepthInputAttachmentIndex   = nullptr;
+	rendering_attachment_index_info.pStencilInputAttachmentIndex = nullptr;
 #else
 	pipeline_create_info.subpass = 0;
 #endif
@@ -834,7 +844,7 @@ void DynamicRenderingLocalRead::build_command_buffers()
 		subresource_range_depth.levelCount = VK_REMAINING_MIP_LEVELS;
 		subresource_range_depth.layerCount = VK_REMAINING_ARRAY_LAYERS;
 
-		vkb::image_layout_transition(cmd, swapchain_buffers[i].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, subresource_range_color);
+		vkb::image_layout_transition(cmd, swapchain_buffers[i].image, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, subresource_range_color);
 		vkb::image_layout_transition(cmd, depth_stencil.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, subresource_range_depth);
 
 		VkRenderingAttachmentInfoKHR color_attachment_info[4]{};

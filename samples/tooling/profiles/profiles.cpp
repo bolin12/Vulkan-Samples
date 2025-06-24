@@ -1,5 +1,5 @@
-/* Copyright (c) 2022-2024, Sascha Willems
- * Copyright (c) 2024, Arm Limited and Contributors
+/* Copyright (c) 2022-2025, Sascha Willems
+ * Copyright (c) 2024-2025, Arm Limited and Contributors
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -159,9 +159,8 @@ std::unique_ptr<vkb::Instance> Profiles::create_instance()
 	VK_CHECK(vkEnumerateInstanceExtensionProperties(nullptr, &instance_extension_count, available_instance_extensions.data()));
 
 	// If VK_KHR_portability_enumeration is available at runtime, enable the extension and flag for instance creation
-	if (std::any_of(available_instance_extensions.begin(),
-	                available_instance_extensions.end(),
-	                [](VkExtensionProperties const &extension) { return strcmp(extension.extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0; }))
+	if (std::ranges::any_of(available_instance_extensions,
+	                        [](VkExtensionProperties const &extension) { return strcmp(extension.extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0; }))
 	{
 		enabled_extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 		create_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
@@ -173,9 +172,8 @@ std::unique_ptr<vkb::Instance> Profiles::create_instance()
 	const int32_t                useMetalArgumentBuffers = 1;
 	VkLayerSettingsCreateInfoEXT layerSettingsCreateInfo{};
 
-	if (std::any_of(available_instance_extensions.begin(),
-	                available_instance_extensions.end(),
-	                [](VkExtensionProperties const &extension) { return strcmp(extension.extensionName, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) == 0; }))
+	if (std::ranges::any_of(available_instance_extensions,
+	                        [](VkExtensionProperties const &extension) { return strcmp(extension.extensionName, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) == 0; }))
 	{
 		enabled_extensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
 
@@ -253,7 +251,7 @@ void Profiles::generate_textures()
 	image_view.subresourceRange.baseArrayLayer = 0;
 	image_view.subresourceRange.layerCount     = 1;
 
-	auto staging_buffer = vkb::core::BufferC::create_staging_buffer(get_device(), image_info.extent.width * image_info.extent.height * sizeof(uint32_t));
+	auto staging_buffer = vkb::core::BufferC::create_staging_buffer(get_device(), image_info.extent.width * image_info.extent.height * sizeof(uint32_t), nullptr);
 
 	textures.resize(32);
 	for (size_t i = 0; i < textures.size(); i++)
@@ -286,21 +284,21 @@ void Profiles::generate_textures()
 		staging_buffer.unmap();
 		staging_buffer.flush();
 
-		auto &cmd = get_device().request_command_buffer();
-		cmd.begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+		auto cmd = get_device().request_command_buffer();
+		cmd->begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-		vkb::image_layout_transition(cmd.get_handle(), textures[i].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		vkb::image_layout_transition(cmd->get_handle(), textures[i].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
 		VkBufferImageCopy copy_info{};
 		copy_info.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
 		copy_info.imageExtent      = image_info.extent;
-		vkCmdCopyBufferToImage(cmd.get_handle(), staging_buffer.get_handle(), textures[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_info);
+		vkCmdCopyBufferToImage(cmd->get_handle(), staging_buffer.get_handle(), textures[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_info);
 
-		vkb::image_layout_transition(cmd.get_handle(), textures[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		vkb::image_layout_transition(cmd->get_handle(), textures[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-		VK_CHECK(cmd.end());
+		cmd->end();
 
-		get_device().get_suitable_graphics_queue().submit(cmd, VK_NULL_HANDLE);
+		get_device().get_suitable_graphics_queue().submit(*cmd, VK_NULL_HANDLE);
 		get_device().get_suitable_graphics_queue().wait_idle();
 	}
 

@@ -1,5 +1,5 @@
-/* Copyright (c) 2019-2024, Arm Limited and Contributors
- * Copyright (c) 2019-2024, Sascha Willems
+/* Copyright (c) 2019-2025, Arm Limited and Contributors
+ * Copyright (c) 2019-2025, Sascha Willems
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -16,7 +16,12 @@
  * limitations under the License.
  */
 
-#include "device.h"
+#include "core/device.h"
+#include "core/buffer.h"
+#include "core/command_pool.h"
+#include "core/physical_device.h"
+#include "core/queue.h"
+#include "fence_pool.h"
 
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
@@ -188,7 +193,7 @@ Device::Device(PhysicalDevice                        &gpu,
 
 	prepare_memory_allocator();
 
-	command_pool = std::make_unique<CommandPool>(*this, get_queue_by_flags(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT, 0).get_family_index());
+	command_pool = std::make_unique<vkb::core::CommandPoolC>(*this, get_queue_by_flags(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT, 0).get_family_index());
 	fence_pool   = std::make_unique<FencePool>(*this);
 }
 
@@ -219,7 +224,7 @@ bool Device::is_extension_supported(const std::string &requested_extension) cons
 
 bool Device::is_enabled(const char *extension) const
 {
-	return std::find_if(enabled_extensions.begin(), enabled_extensions.end(), [extension](const char *enabled_extension) { return strcmp(extension, enabled_extension) == 0; }) != enabled_extensions.end();
+	return std::ranges::find_if(enabled_extensions, [extension](const char *enabled_extension) { return strcmp(extension, enabled_extension) == 0; }) != enabled_extensions.end();
 }
 
 const PhysicalDevice &Device::get_gpu() const
@@ -415,7 +420,7 @@ const Queue &Device::get_suitable_graphics_queue() const
 
 void Device::copy_buffer(vkb::core::BufferC &src, vkb::core::BufferC &dst, VkQueue queue, VkBufferCopy *copy_region)
 {
-	assert(dst.get_size() <= src.get_size());
+	assert(dst.get_size() >= src.get_size());
 	assert(src.get_handle());
 
 	VkCommandBuffer command_buffer = create_command_buffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
@@ -510,7 +515,7 @@ void Device::flush_command_buffer(VkCommandBuffer command_buffer, VkQueue queue,
 	}
 }
 
-CommandPool &Device::get_command_pool() const
+vkb::core::CommandPoolC &Device::get_command_pool() const
 {
 	return *command_pool;
 }
@@ -527,7 +532,7 @@ void Device::create_internal_fence_pool()
 
 void Device::create_internal_command_pool()
 {
-	command_pool = std::make_unique<CommandPool>(*this, get_queue_by_flags(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT, 0).get_family_index());
+	command_pool = std::make_unique<vkb::core::CommandPoolC>(*this, get_queue_by_flags(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT, 0).get_family_index());
 }
 
 void Device::prepare_memory_allocator()
@@ -535,7 +540,7 @@ void Device::prepare_memory_allocator()
 	vkb::allocated::init(*this);
 }
 
-CommandBuffer &Device::request_command_buffer() const
+std::shared_ptr<vkb::core::CommandBufferC> Device::request_command_buffer() const
 {
 	return command_pool->request_command_buffer();
 }

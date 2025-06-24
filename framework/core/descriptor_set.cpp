@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2024, Arm Limited and Contributors
+/* Copyright (c) 2019-2025, Arm Limited and Contributors
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -16,12 +16,9 @@
  */
 
 #include "descriptor_set.h"
-
 #include "common/resource_caching.h"
-#include "core/util/logging.hpp"
-#include "descriptor_pool.h"
-#include "descriptor_set_layout.h"
-#include "device.h"
+#include "core/device.h"
+#include "core/physical_device.h"
 
 namespace vkb
 {
@@ -181,7 +178,7 @@ void DescriptorSet::update(const std::vector<uint32_t> &bindings_to_update)
 		{
 			const auto &write_operation = write_descriptor_sets[i];
 
-			if (std::find(bindings_to_update.begin(), bindings_to_update.end(), write_operation.dstBinding) != bindings_to_update.end())
+			if (std::ranges::find(bindings_to_update, write_operation.dstBinding) != bindings_to_update.end())
 			{
 				size_t write_operation_hash = 0;
 				hash_param(write_operation_hash, write_operation);

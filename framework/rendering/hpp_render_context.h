@@ -1,5 +1,5 @@
-/* Copyright (c) 2022-2024, NVIDIA CORPORATION. All rights reserved.
- * Copyright (c) 2024, Arm Limited and Contributors
+/* Copyright (c) 2022-2025, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2024-2025, Arm Limited and Contributors
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -18,13 +18,24 @@
 
 #pragma once
 
-#include <core/hpp_device.h>
-#include <core/hpp_swapchain.h>
-#include <platform/window.h>
-#include <rendering/hpp_render_frame.h>
+#include "common/vk_common.h"
+#include "core/hpp_swapchain.h"
+#include "rendering/hpp_render_target.h"
+#include "rendering/render_frame.h"
 
 namespace vkb
 {
+class Window;
+
+namespace core
+{
+template <vkb::BindingType bindingType>
+class CommandBuffer;
+using CommandBufferCpp = CommandBuffer<vkb::BindingType::Cpp>;
+
+class HPPQueue;
+}        // namespace core
+
 namespace rendering
 {
 /**
@@ -118,19 +129,19 @@ class HPPRenderContext
 	 * @returns A valid command buffer to record commands to be submitted
 	 * Also ensures that there is an active frame if there is no existing active frame already
 	 */
-	vkb::core::HPPCommandBuffer &begin(vkb::core::HPPCommandBuffer::ResetMode reset_mode = vkb::core::HPPCommandBuffer::ResetMode::ResetPool);
+	std::shared_ptr<vkb::core::CommandBufferCpp> begin(vkb::CommandBufferResetMode reset_mode = vkb::CommandBufferResetMode::ResetPool);
 
 	/**
 	 * @brief Submits the command buffer to the right queue
 	 * @param command_buffer A command buffer containing recorded commands
 	 */
-	void submit(vkb::core::HPPCommandBuffer &command_buffer);
+	void submit(vkb::core::CommandBufferCpp &command_buffer);
 
 	/**
 	 * @brief Submits multiple command buffers to the right queue
 	 * @param command_buffers Command buffers containing recorded commands
 	 */
-	void submit(const std::vector<vkb::core::HPPCommandBuffer *> &command_buffers);
+	void submit(const std::vector<vkb::core::CommandBufferCpp *> &command_buffers);
 
 	/**
 	 * @brief begin_frame
@@ -138,14 +149,14 @@ class HPPRenderContext
 	void begin_frame();
 
 	vk::Semaphore submit(const vkb::core::HPPQueue                        &queue,
-	                     const std::vector<vkb::core::HPPCommandBuffer *> &command_buffers,
+	                     const std::vector<vkb::core::CommandBufferCpp *> &command_buffers,
 	                     vk::Semaphore                                     wait_semaphore,
 	                     vk::PipelineStageFlags                            wait_pipeline_stage);
 
 	/**
 	 * @brief Submits a command buffer related to a frame to a queue
 	 */
-	void submit(const vkb::core::HPPQueue &queue, const std::vector<vkb::core::HPPCommandBuffer *> &command_buffers);
+	void submit(const vkb::core::HPPQueue &queue, const std::vector<vkb::core::CommandBufferCpp *> &command_buffers);
 
 	/**
 	 * @brief Waits a frame to finish its rendering
@@ -159,7 +170,7 @@ class HPPRenderContext
 	 *        A frame is active after @ref begin_frame has been called.
 	 * @return The current active frame
 	 */
-	HPPRenderFrame &get_active_frame();
+	vkb::rendering::RenderFrameCpp &get_active_frame();
 
 	/**
 	 * @brief An error should be raised if the frame is not active.
@@ -173,7 +184,7 @@ class HPPRenderContext
 	 *        A frame is active after @ref begin_frame has been called.
 	 * @return The previous frame
 	 */
-	HPPRenderFrame &get_last_rendered_frame();
+	vkb::rendering::RenderFrameCpp &get_last_rendered_frame();
 
 	vk::Semaphore request_semaphore();
 	vk::Semaphore request_semaphore_with_ownership();
@@ -192,7 +203,7 @@ class HPPRenderContext
 
 	uint32_t get_active_frame_index() const;
 
-	std::vector<std::unique_ptr<HPPRenderFrame>> &get_render_frames();
+	std::vector<std::unique_ptr<vkb::rendering::RenderFrameCpp>> &get_render_frames();
 
 	/**
 	 * @brief Handles surface changes, only applicable if the render_context makes use of a swapchain
@@ -220,7 +231,7 @@ class HPPRenderContext
 
 	vkb::core::HPPSwapchainProperties swapchain_properties;
 
-	std::vector<std::unique_ptr<HPPRenderFrame>> frames;
+	std::vector<std::unique_ptr<vkb::rendering::RenderFrameCpp>> frames;
 
 	vk::Semaphore acquired_semaphore;
 

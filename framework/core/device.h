@@ -1,5 +1,5 @@
-/* Copyright (c) 2019-2024, Arm Limited and Contributors
- * Copyright (c) 2019-2024, Sascha Willems
+/* Copyright (c) 2019-2025, Arm Limited and Contributors
+ * Copyright (c) 2019-2025, Sascha Willems
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -20,6 +20,7 @@
 
 #include "common/helpers.h"
 #include "common/vk_common.h"
+#include "core/buffer.h"
 #include "core/command_buffer.h"
 #include "core/command_pool.h"
 #include "core/debug.h"
@@ -134,7 +135,7 @@ class Device : public vkb::core::VulkanResourceC<VkDevice>
 
 	uint32_t get_num_queues_for_queue_family(uint32_t queue_family_index);
 
-	CommandPool &get_command_pool() const;
+	vkb::core::CommandPoolC &get_command_pool() const;
 
 	/**
 	 * @brief Checks that a given memory type is supported by the GPU
@@ -183,7 +184,7 @@ class Device : public vkb::core::VulkanResourceC<VkDevice>
 	 * @brief Requests a command buffer from the general command_pool
 	 * @return A new command buffer
 	 */
-	CommandBuffer &request_command_buffer() const;
+	std::shared_ptr<vkb::core::CommandBufferC> request_command_buffer() const;
 
 	FencePool &get_fence_pool() const;
 
@@ -224,7 +225,7 @@ class Device : public vkb::core::VulkanResourceC<VkDevice>
 	std::vector<std::vector<Queue>> queues;
 
 	/// A command pool associated to the primary queue
-	std::unique_ptr<CommandPool> command_pool;
+	std::unique_ptr<vkb::core::CommandPoolC> command_pool;
 
 	/// A fence pool associated to the primary queue
 	std::unique_ptr<FencePool> fence_pool;
